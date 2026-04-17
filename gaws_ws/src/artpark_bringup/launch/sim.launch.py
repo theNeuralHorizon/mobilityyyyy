@@ -45,11 +45,16 @@ def generate_launch_description():
         },
     )
 
-    # GUI mode: no -s flag, runs with Gazebo GUI window
+    # GUI mode: no -s flag, runs with Gazebo GUI window.
+    # Force software rendering to avoid Ogre2 GLX crashes on hybrid-GPU laptops.
     gz_sim_gui = ExecuteProcess(
         condition=UnlessCondition(headless),
-        cmd=['gz', 'sim', '-r', '-v', '3', world],
+        cmd=['gz', 'sim', '-r', '--render-engine', 'ogre', '-v', '3', world],
         output='screen',
+        additional_env={
+            'LIBGL_ALWAYS_SOFTWARE': '1',
+            'MESA_GL_VERSION_OVERRIDE': '3.3',
+        },
     )
 
     clock_bridge = Node(
