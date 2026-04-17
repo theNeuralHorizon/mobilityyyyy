@@ -1,0 +1,329 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="artpark_bot">
+
+  <!-- ================= CONSTANTS ================= -->
+  <xacro:property name="base_len"   value="0.25"/>
+  <xacro:property name="base_wid"   value="0.22"/>
+  <xacro:property name="base_hei"   value="0.08"/>
+  <xacro:property name="base_mass"  value="3.0"/>
+
+  <xacro:property name="wheel_rad"  value="0.045"/>
+  <xacro:property name="wheel_wid"  value="0.025"/>
+  <xacro:property name="wheel_mass" value="0.2"/>
+  <xacro:property name="wheel_sep"  value="0.22"/>
+
+  <xacro:property name="caster_rad" value="0.02"/>
+
+  <xacro:property name="cam_tilt_deg" value="10"/>
+  <xacro:property name="cam_tilt" value="${cam_tilt_deg * 3.14159265 / 180.0}"/>
+
+  <!-- ================= MATERIALS ================= -->
+  <material name="body_grey"><color rgba="0.25 0.25 0.3 1"/></material>
+  <material name="wheel_black"><color rgba="0.05 0.05 0.05 1"/></material>
+  <material name="cam_blue"><color rgba="0.1 0.3 0.9 1"/></material>
+  <material name="lidar_red"><color rgba="0.9 0.1 0.1 1"/></material>
+
+  <!-- ================= MACROS ================= -->
+  <xacro:macro name="inertial_box" params="mass x y z">
+    <inertial>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass/12*(y*y+z*z)}" ixy="0" ixz="0"
+               iyy="${mass/12*(x*x+z*z)}" iyz="0"
+               izz="${mass/12*(x*x+y*y)}"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="inertial_cyl" params="mass r h">
+    <inertial>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass/12*(3*r*r+h*h)}" ixy="0" ixz="0"
+               iyy="${mass/12*(3*r*r+h*h)}" iyz="0"
+               izz="${mass/2*r*r}"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="inertial_sph" params="mass r">
+    <inertial>
+      <mass value="${mass}"/>
+      <inertia ixx="${2*mass*r*r/5}" ixy="0" ixz="0"
+               iyy="${2*mass*r*r/5}" iyz="0"
+               izz="${2*mass*r*r/5}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- ================= CHASSIS ================= -->
+  <!-- base_footprint is the root frame. Some spawn tools require an
+       inertial on the root link; give it a tiny non-zero one. -->
+  <link name="base_footprint">
+    <inertial>
+      <mass value="0.001"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+  </link>
+
+  <link name="base_link">
+    <xacro:inertial_box mass="${base_mass}" x="${base_len}" y="${base_wid}" z="${base_hei}"/>
+    <visual>
+      <geometry><box size="${base_len} ${base_wid} ${base_hei}"/></geometry>
+      <material name="body_grey"/>
+    </visual>
+    <collision>
+      <geometry><box size="${base_len} ${base_wid} ${base_hei}"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="base_footprint_to_base" type="fixed">
+    <parent link="base_footprint"/>
+    <child  link="base_link"/>
+    <origin xyz="0 0 ${wheel_rad + base_hei/2}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ================= WHEELS ================= -->
+  <xacro:macro name="wheel" params="side y_sign">
+    <link name="wheel_${side}">
+      <xacro:inertial_cyl mass="${wheel_mass}" r="${wheel_rad}" h="${wheel_wid}"/>
+      <visual>
+        <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
+        <geometry><cylinder radius="${wheel_rad}" length="${wheel_wid}"/></geometry>
+        <material name="wheel_black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="1.5707963 0 0"/>
+        <geometry><cylinder radius="${wheel_rad}" length="${wheel_wid}"/></geometry>
+      </collision>
+    </link>
+    <joint name="wheel_${side}_joint" type="continuous">
+      <parent link="base_link"/>
+      <child  link="wheel_${side}"/>
+      <origin xyz="0 ${y_sign*wheel_sep/2} ${-base_hei/2}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+  <xacro:wheel side="left"  y_sign=" 1"/>
+  <xacro:wheel side="right" y_sign="-1"/>
+
+  <!-- ================= CASTER ================= -->
+  <link name="caster">
+    <xacro:inertial_sph mass="0.05" r="${caster_rad}"/>
+    <visual>
+      <geometry><sphere radius="${caster_rad}"/></geometry>
+      <material name="wheel_black"/>
+    </visual>
+    <collision>
+      <geometry><sphere radius="${caster_rad}"/></geometry>
+    </collision>
+  </link>
+  <joint name="caster_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="caster"/>
+    <origin xyz="${-base_len/2 + caster_rad} 0 ${-base_hei/2 - (wheel_rad - caster_rad)}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ================= FRONT RGB CAMERA (tilted 10° down) ================= -->
+  <link name="front_cam">
+    <xacro:inertial_box mass="0.05" x="0.03" y="0.05" z="0.03"/>
+    <visual>
+      <geometry><box size="0.03 0.05 0.03"/></geometry>
+      <material name="cam_blue"/>
+    </visual>
+    <collision>
+      <geometry><box size="0.03 0.05 0.03"/></geometry>
+    </collision>
+  </link>
+  <joint name="front_cam_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="front_cam"/>
+    <origin xyz="${base_len/2 - 0.02} 0 ${base_hei/2 + 0.02}" rpy="0 ${cam_tilt} 0"/>
+  </joint>
+
+  <!-- ================= DOWN-FACING FLOOR CAMERA ================= -->
+  <link name="floor_cam">
+    <xacro:inertial_box mass="0.03" x="0.02" y="0.04" z="0.02"/>
+    <!-- No visual/collision — camera must not see its own geometry.
+         Sensor pose is derived from floor_cam_joint by sdformat. -->
+  </link>
+  <joint name="floor_cam_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="floor_cam"/>
+    <!-- 75° down from horizontal; mounted above chassis front.
+         89°/90° causes blank render on Mesa llvmpipe — 75° is the safe max. -->
+    <origin xyz="${base_len/2 - 0.02} 0 ${base_hei/2 + 0.04}" rpy="0 1.3090 0"/>
+  </joint>
+  <!-- Prevent sdformat from lumping floor_cam into the canonical link.
+       Keeps the sensor on its own scene node so ogre2 renders correctly. -->
+  <gazebo reference="floor_cam_joint">
+    <preserveFixedJoint>true</preserveFixedJoint>
+  </gazebo>
+
+  <!-- ================= 2D LiDAR ================= -->
+  <link name="lidar_link">
+    <xacro:inertial_cyl mass="0.1" r="0.03" h="0.04"/>
+    <visual>
+      <geometry><cylinder radius="0.03" length="0.04"/></geometry>
+      <material name="lidar_red"/>
+    </visual>
+    <collision>
+      <geometry><cylinder radius="0.03" length="0.04"/></geometry>
+    </collision>
+  </link>
+  <joint name="lidar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="lidar_link"/>
+    <!-- Raised to 0.06m above chassis top to clear the front_cam visual box
+         and avoid self-collision returns in the LaserScan. -->
+    <origin xyz="0 0 ${base_hei/2 + 0.06}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ================= IMU ================= -->
+  <link name="imu_link">
+    <inertial><mass value="0.01"/><inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/></inertial>
+  </link>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="imu_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ================= GAZEBO / IGNITION TAGS ================= -->
+  <!-- Explicit inline materials per link (ambient + diffuse). This is the
+       SDF-native form that Gazebo Harmonic renders reliably; URDF-only
+       <material name=...> blocks are not always picked up by sdformat.
+       Chose deliberately loud colours to make the robot obvious. -->
+  <gazebo reference="base_link">
+    <visual>
+      <material>
+        <ambient>1.0 0.1 0.1 1.0</ambient>
+        <diffuse>1.0 0.1 0.1 1.0</diffuse>
+        <specular>0.2 0.2 0.2 1.0</specular>
+      </material>
+    </visual>
+  </gazebo>
+  <gazebo reference="wheel_left">
+    <mu1>1.0</mu1><mu2>1.0</mu2>
+    <visual><material>
+      <ambient>0.05 0.05 0.05 1.0</ambient>
+      <diffuse>0.05 0.05 0.05 1.0</diffuse>
+    </material></visual>
+  </gazebo>
+  <gazebo reference="wheel_right">
+    <mu1>1.0</mu1><mu2>1.0</mu2>
+    <visual><material>
+      <ambient>0.05 0.05 0.05 1.0</ambient>
+      <diffuse>0.05 0.05 0.05 1.0</diffuse>
+    </material></visual>
+  </gazebo>
+  <gazebo reference="caster">
+    <mu1>0.0</mu1><mu2>0.0</mu2>
+  </gazebo>
+  <gazebo reference="front_cam">
+    <visual><material>
+      <ambient>0.1 0.3 0.9 1.0</ambient>
+      <diffuse>0.1 0.3 0.9 1.0</diffuse>
+    </material></visual>
+  </gazebo>
+  <!-- floor_cam: no Gazebo visual override — link has no visual geometry -->
+  <gazebo reference="lidar_link">
+    <visual><material>
+      <ambient>1.0 0.8 0.0 1.0</ambient>
+      <diffuse>1.0 0.8 0.0 1.0</diffuse>
+    </material></visual>
+  </gazebo>
+
+  <!-- Differential drive plugin.
+       Topic names are absolute (leading slash) so they don't get namespaced
+       under /model/artpark_bot/ — the bridge talks to /cmd_vel + /odom. -->
+  <gazebo>
+    <plugin filename="gz-sim-diff-drive-system"
+            name="gz::sim::systems::DiffDrive">
+      <left_joint>wheel_left_joint</left_joint>
+      <right_joint>wheel_right_joint</right_joint>
+      <wheel_separation>${wheel_sep}</wheel_separation>
+      <wheel_radius>${wheel_rad}</wheel_radius>
+      <topic>/cmd_vel</topic>
+      <odom_topic>/odom</odom_topic>
+      <frame_id>odom</frame_id>
+      <child_frame_id>base_footprint</child_frame_id>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <tf_topic>/tf</tf_topic>
+    </plugin>
+    <plugin filename="gz-sim-joint-state-publisher-system"
+            name="gz::sim::systems::JointStatePublisher">
+      <topic>/joint_states</topic>
+    </plugin>
+  </gazebo>
+
+  <!-- Front RGB camera -->
+  <gazebo reference="front_cam">
+    <sensor name="front_cam" type="camera">
+      <update_rate>30</update_rate>
+      <topic>/front_cam/image_raw</topic>
+      <camera>
+        <horizontal_fov>1.5184</horizontal_fov>
+        <image><width>640</width><height>480</height><format>R8G8B8</format></image>
+        <clip><near>0.05</near><far>10.0</far></clip>
+      </camera>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+    </sensor>
+  </gazebo>
+
+  <!-- Down-facing floor camera sensor — position comes from floor_cam_joint,
+       NO <pose> inside the sensor (URDF→SDF silently drops it). -->
+  <gazebo reference="floor_cam">
+    <sensor name="floor_cam" type="camera">
+      <update_rate>15</update_rate>
+      <topic>/floor_cam/image_raw</topic>
+      <camera>
+        <horizontal_fov>1.047</horizontal_fov>
+        <image><width>320</width><height>240</height><format>R8G8B8</format></image>
+        <clip><near>0.01</near><far>0.5</far></clip>
+      </camera>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+    </sensor>
+  </gazebo>
+
+  <!-- LiDAR: gpu_lidar required by Gazebo Harmonic (cpu lidar unsupported).
+       Works headless via headless_rendering flag plus Mesa llvmpipe. -->
+  <gazebo reference="lidar_link">
+    <sensor name="lidar" type="gpu_lidar">
+      <update_rate>15</update_rate>
+      <topic>/scan</topic>
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.14159</min_angle>
+            <max_angle> 3.14159</max_angle>
+          </horizontal>
+        </scan>
+        <range><min>0.15</min><max>6.0</max><resolution>0.01</resolution></range>
+      </lidar>
+      <always_on>true</always_on>
+      <visualize>true</visualize>
+    </sensor>
+  </gazebo>
+
+  <!-- IMU -->
+  <gazebo reference="imu_link">
+    <sensor name="imu" type="imu">
+      <update_rate>100</update_rate>
+      <topic>/imu</topic>
+      <always_on>true</always_on>
+      <imu>
+        <angular_velocity>
+          <x><noise type="gaussian"><mean>0</mean><stddev>0.005</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0</mean><stddev>0.005</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0</mean><stddev>0.005</stddev></noise></z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x><noise type="gaussian"><mean>0</mean><stddev>0.02</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0</mean><stddev>0.02</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0</mean><stddev>0.02</stddev></noise></z>
+        </linear_acceleration>
+      </imu>
+    </sensor>
+  </gazebo>
+
+</robot>

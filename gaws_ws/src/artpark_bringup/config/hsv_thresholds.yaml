@@ -1,0 +1,17 @@
+# HSV thresholds for the floor logo detector.
+# Widened to tolerate PBR emissive rendering on Mesa llvmpipe.
+# RGB-ratio detection runs alongside HSV (OR'd) for extra robustness.
+# Calibrate on the physical arena before the physical run — lighting differs.
+
+floor_logo_detector:
+  ros__parameters:
+    hsv_green_low:  [25,  30,  40]
+    hsv_green_high: [95, 255, 255]
+    hsv_orange_low:  [ 5,  60,  80]
+    hsv_orange_high: [25, 255, 255]
+    edge_inset: 0.05
+    edge_depth: 0.15
+    publish_rate_hz: 8.0
+    # Set to true to save debug images to /tmp/floor_cam_debug/
+    debug_save_images: false
+    debug_save_dir: /tmp/floor_cam_debug

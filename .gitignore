@@ -1,0 +1,23 @@
+# Build artifacts
+gaws_ws/build/
+gaws_ws/install/
+gaws_ws/log/
+__pycache__/
+*.pyc
+
+# Large media files (not needed for the robot code)
+*.mp4
+*.webm
+*.avi
+*.mkv
+
+# Extracted docx internals (the .docx files themselves are kept)
+docx_extract/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# Claude local settings
+.claude/

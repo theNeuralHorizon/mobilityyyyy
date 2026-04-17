@@ -1,0 +1,29 @@
+# ROS2 build artefacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Run artefacts
+artpark_runs/
+*.bag
+*.bag.active
+*.db3
+
+# Local overrides
+.env
+local_*.yaml

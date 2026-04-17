@@ -1,0 +1,33 @@
+# Motion tuning for the state machine. All values metres or radians/s.
+
+state_machine:
+  ros__parameters:
+    v_explore: 0.20
+    v_approach: 0.08
+    v_follow: 0.15
+    w_turn: 0.8
+    idle_watchdog_s: 4.0
+    # PD right-wall-following gains
+    wall_target_m: 0.40
+    wall_kp: 1.0
+    wall_kd: 0.5
+    # Stuck detection
+    stuck_timeout_s: 10.0
+    stuck_distance_m: 0.10
+    # Post-rotation forward drive
+    post_rotate_dist_m: 0.80
+    # Wall-following thresholds
+    emergency_front_m: 0.25
+    slow_front_m: 0.40
+    opening_threshold_m: 0.80
+    # Color-following grace period (don't exhaust too early)
+    color_grace_dist_m: 0.40
+    color_grace_time_s: 3.0
+    color_exhaust_streak: 15
+    # Red STOP detection threshold (center-region pixels)
+    red_stop_threshold: 3000
+
+obstacle_monitor:
+  ros__parameters:
+    danger_radius_m: 0.35
+    forward_arc_deg: 40.0
