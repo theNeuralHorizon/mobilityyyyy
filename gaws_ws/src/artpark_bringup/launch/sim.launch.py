@@ -25,14 +25,12 @@ def generate_launch_description():
         value=os.path.dirname(grid_world_share),
     )
 
-    # Qt offscreen platform — prevents "could not connect to display" crash
-    # when running without X11/Wayland (WSL2 headless, CI, SSH).
-    qt_offscreen = SetEnvironmentVariable(name='QT_QPA_PLATFORM', value='offscreen')
-
     world = LaunchConfiguration('world')
     headless = LaunchConfiguration('headless')
 
-    # Headless mode: -s (server-only, no GUI) + --headless-rendering
+    # ---- HEADLESS mode ----
+    # -s: server-only (no GUI). --headless-rendering: sensor rendering via
+    # Mesa llvmpipe. QT_QPA_PLATFORM=offscreen: prevent display-not-found crash.
     gz_sim_headless = ExecuteProcess(
         condition=IfCondition(headless),
         cmd=['gz', 'sim', '-r', '-s', '--headless-rendering', '-v', '3', world],
@@ -45,15 +43,16 @@ def generate_launch_description():
         },
     )
 
-    # GUI mode: no -s flag, runs with Gazebo GUI window.
-    # Force software rendering to avoid Ogre2 GLX crashes on hybrid-GPU laptops.
+    # ---- GUI mode ----
+    # No -s flag → Gazebo opens its GUI window.
+    # QT_QPA_PLATFORM=xcb forces X11 (Wayland breaks Ogre2 GLX window creation).
+    # Do NOT set LIBGL_ALWAYS_SOFTWARE here — let the real GPU render the GUI.
     gz_sim_gui = ExecuteProcess(
         condition=UnlessCondition(headless),
-        cmd=['gz', 'sim', '-r', '--render-engine', 'ogre', '-v', '3', world],
+        cmd=['gz', 'sim', '-r', '-v', '3', world],
         output='screen',
         additional_env={
-            'LIBGL_ALWAYS_SOFTWARE': '1',
-            'MESA_GL_VERSION_OVERRIDE': '3.3',
+            'QT_QPA_PLATFORM': 'xcb',
         },
     )
 
@@ -71,6 +70,6 @@ def generate_launch_description():
         DeclareLaunchArgument('headless', default_value='true',
                               description='Run Gazebo in headless mode (no GUI). '
                               'Set to false for desktop testing with GUI.'),
-        gz_resource, qt_offscreen,
+        gz_resource,
         gz_sim_headless, gz_sim_gui, clock_bridge,
     ])
