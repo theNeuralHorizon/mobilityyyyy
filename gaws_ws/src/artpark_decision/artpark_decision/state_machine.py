@@ -235,18 +235,23 @@ class StateMachine(Node):
     def _on_edge(self, msg: EdgeSample) -> None:
         self.s.last_edge_sample = msg
 
-        # Red STOP detection — only active during ORANGE_FOLLOW
-        # (NOT SEEK_TAG_5: rosette tiles trigger false positives there)
+        # Red STOP detection — only active during ORANGE_FOLLOW and only
+        # after a grace period (robot must have been in ORANGE_FOLLOW for
+        # at least color_grace_time_s seconds and moved color_grace_dist_m).
         if self.s.phase == Phase.ORANGE_FOLLOW:
             if msg.red_total > self.red_stop_threshold:
-                # Require robot has moved >1m from spawn to avoid false-positive
-                # on the green START tile. Odom starts at (0,0) at spawn.
-                dist = math.hypot(self.s.odom_x, self.s.odom_y)
-                if dist > 1.0:
-                    self.s.phase = Phase.REACH_STOP
-                    self.pub_score.publish(String(data=json.dumps({'type': 'STOP_REACHED'})))
-                    self._think(f'RED STOP detected: red_total={msg.red_total}, dist={dist:.2f}m',
-                                rule='state_machine.red_stop', confidence=0.9)
+                # Grace: must have been in ORANGE_FOLLOW long enough
+                elapsed = time.monotonic() - self.s.color_follow_start_time
+                cf_dist = self._color_follow_dist()
+                if elapsed > self.color_grace_time and cf_dist > self.color_grace_dist:
+                    # Also require robot has moved >1m from spawn
+                    dist = math.hypot(self.s.odom_x, self.s.odom_y)
+                    if dist > 1.0:
+                        self.s.phase = Phase.REACH_STOP
+                        self.pub_score.publish(String(data=json.dumps({'type': 'STOP_REACHED'})))
+                        self._think(f'RED STOP detected: red_total={msg.red_total}, '
+                                    f'dist={dist:.2f}m, cf_dist={cf_dist:.2f}m, elapsed={elapsed:.1f}s',
+                                    rule='state_machine.red_stop', confidence=0.9)
 
     def _on_tile(self, msg: TileEvent) -> None:
         self.s.tile_rc = (msg.tile_row, msg.tile_col)

@@ -1,19 +1,12 @@
-"""Spawn the artpark_bot into an already-running Gazebo sim.
+"""Spawn the mini_r1 rover into an already-running Gazebo sim.
 
 Run after `gz sim -r grid_world_FINAL.sdf` is up. This launch publishes TF
 from the xacro URDF, bridges the Gazebo sensor/command topics into ROS, and
 spawns the robot at the solid-green START tile with yaw configurable via
 argument.
-
-Note on spawn args: the ros_gz_sim/create tool uses argparse which can
-mis-parse negative values like `-x -1.35` (treats `-1.35` as a flag). We
-work around this by either (a) using a wrapper bash command with `--` as a
-separator, or (b) using ExecuteProcess with explicit argv so no shell
-splitting happens. We go with (b) — most robust.
 """
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, TimerAction
-from launch.event_handlers import OnProcessExit
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.descriptions import ParameterValue
@@ -21,14 +14,17 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    pkg = FindPackageShare('artpark_robot')
-    xacro = PathJoinSubstitution([pkg, 'urdf', 'artpark_bot.urdf.xacro'])
+    pkg = FindPackageShare('mini_r1_v1_description')
+    xacro = PathJoinSubstitution([pkg, 'urdf', 'mini_r1.urdf.xacro'])
 
     spawn_x   = LaunchConfiguration('spawn_x')
     spawn_y   = LaunchConfiguration('spawn_y')
     spawn_yaw = LaunchConfiguration('spawn_yaw')
 
-    robot_description = ParameterValue(Command(['xacro ', xacro]), value_type=str)
+    robot_description = ParameterValue(
+        Command(['xacro ', xacro, ' use_control:=false']),
+        value_type=str,
+    )
 
     rsp = Node(
         package='robot_state_publisher',
@@ -39,52 +35,43 @@ def generate_launch_description():
 
     # Delay the spawn by 3s so robot_state_publisher has published the
     # /robot_description topic before 'create' tries to subscribe to it.
-    # Without this, 'create' can timeout or spawn an empty entity.
     spawn = TimerAction(period=3.0, actions=[ExecuteProcess(
         cmd=[
             'ros2', 'run', 'ros_gz_sim', 'create',
             '-topic', 'robot_description',
-            '-name', 'artpark_bot',
-            ['-x', '=', spawn_x],   # → `-x=-1.35` — argparse-safe
+            '-name', 'mini_r1',
+            ['-x', '=', spawn_x],
             ['-y', '=', spawn_y],
-            '-z=0.05',
+            '-z=0.07',
             ['-Y', '=', spawn_yaw],
         ],
         output='screen',
     )])
 
-    # After the create process exits, call set_pose as a belt-and-suspenders
-    # teleport. Re-snaps the robot to the intended world pose even if the
-    # -x/-y flags were ignored (common Harmonic-gotcha with negative vals).
-    # 6s = 3s (spawn delay above) + 3s (wait for entity to be created)
+    # Belt-and-suspenders teleport to correct pose after spawn.
     fixup_pose = TimerAction(period=6.0, actions=[
         ExecuteProcess(
             cmd=['gz', 'service', '-s', '/world/artpark_arena/set_pose',
                  '--reqtype', 'gz.msgs.Pose',
                  '--reptype', 'gz.msgs.Boolean',
                  '--timeout', '2000',
-                 '--req', ['name: "artpark_bot", position: {x: ', spawn_x,
-                           ', y: ', spawn_y, ', z: 0.05}, orientation: {z: 0, w: 1}']],
+                 '--req', ['name: "mini_r1", position: {x: ', spawn_x,
+                           ', y: ', spawn_y, ', z: 0.07}, orientation: {z: 0, w: 1}']],
             output='screen',
         ),
     ])
 
-    # Topic bridges: Gazebo ↔ ROS 2
-    # Direction symbols (ros_gz_bridge v>=0.244):
-    #   @  bidirectional (only when truly needed)
-    #   [  GZ publisher → ROS subscriber (sensor data, odom, tf)
-    #   ]  ROS publisher → GZ subscriber (commands)
-    # Making these one-way avoids feedback loops where our ROS-side
-    # publishers (robot_state_publisher etc.) re-publish to GZ and
-    # confuse the physics engine.
+    # Topic bridges: Gazebo <-> ROS 2
+    # All sensor topics now use absolute paths in the URDF, so they match
+    # directly without needing model-namespace prefixing.
     bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
         name='gz_bridge',
         arguments=[
-            # Commands: ROS → GZ
+            # Commands: ROS -> GZ
             '/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
-            # Sensor / state: GZ → ROS
+            # Sensor / state: GZ -> ROS
             '/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
             '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
@@ -104,6 +91,6 @@ def generate_launch_description():
         DeclareLaunchArgument('spawn_y',   default_value='1.80',
                               description='World y of the START tile (solid green)'),
         DeclareLaunchArgument('spawn_yaw', default_value='0.0',
-                              description='Yaw at spawn; adjust after P0 screenshot'),
+                              description='Yaw at spawn'),
         rsp, spawn, bridge, fixup_pose,
     ])

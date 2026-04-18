@@ -11,6 +11,9 @@ __pycache__/
 *.avi
 *.mkv
 
+# Zip archives (original rover model sources — extracted into gaws_ws/src/)
+*.zip
+
 # Extracted docx internals (the .docx files themselves are kept)
 docx_extract/
 
