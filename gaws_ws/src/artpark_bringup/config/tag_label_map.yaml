@@ -12,7 +12,7 @@
 
 apriltag_handler:
   ros__parameters:
-    tag_label_map_json:    '{"1": 1, "4": 2, "0": 3, "3": 4, "2": 5}'
+    tag_label_map_json:    '{"1": 1, "0": 2, "4": 3, "3": 4, "2": 5}'
     action_by_label_json:  '{"1": "LEFT", "2": "RIGHT", "3": "GREEN", "4": "U_TURN", "5": "ORANGE"}'
     vote_window: 3
     pixel_tolerance: 20.0
