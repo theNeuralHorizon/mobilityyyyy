@@ -209,20 +209,11 @@ class StateMachine(Node):
                     rule='state_machine.on_tag_commit',
                     confidence=1.0)
 
-        # LiDAR cross-check: reject LEFT/RIGHT if wall blocks the target direction
+        # Execute the tag action — no LiDAR veto (corridor walls in a 0.9m
+        # grid are always ~0.35m away, so a veto would block every turn).
         if action == 'LEFT':
-            left_dist = self._oct(6) if len(self._octants) > 6 else float('inf')
-            if left_dist < 0.40:
-                self._think(f'LiDAR rejects LEFT: wall at {left_dist:.2f}m on left',
-                            rule='state_machine.lidar_veto', confidence=0.9)
-                return
             self._start_rotation(+math.pi / 2, Phase.ACT_LEFT)
         elif action == 'RIGHT':
-            right_dist = self._oct(2) if len(self._octants) > 2 else float('inf')
-            if right_dist < 0.40:
-                self._think(f'LiDAR rejects RIGHT: wall at {right_dist:.2f}m on right',
-                            rule='state_machine.lidar_veto', confidence=0.9)
-                return
             self._start_rotation(-math.pi / 2, Phase.ACT_RIGHT)
         elif action == 'U_TURN':
             self.s.pre_uturn_entry = self.s.entry_edge

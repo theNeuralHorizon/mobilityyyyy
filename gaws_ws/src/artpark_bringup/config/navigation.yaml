@@ -2,10 +2,10 @@
 
 state_machine:
   ros__parameters:
-    v_explore: 0.20
-    v_approach: 0.08
-    v_follow: 0.15
-    w_turn: 0.8
+    v_explore: 0.30
+    v_approach: 0.12
+    v_follow: 0.22
+    w_turn: 1.0
     idle_watchdog_s: 4.0
     # PD right-wall-following gains
     wall_target_m: 0.40
