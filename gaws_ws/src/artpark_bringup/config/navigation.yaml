@@ -27,6 +27,8 @@ state_machine:
     # Red STOP detection threshold (center-region pixels)
     # Set high to avoid false positives on rosette tile patterns
     red_stop_threshold: 8000
+    # Tag execution distance — only act on a tag when within this range
+    tag_execute_dist_m: 0.80
 
 obstacle_monitor:
   ros__parameters:

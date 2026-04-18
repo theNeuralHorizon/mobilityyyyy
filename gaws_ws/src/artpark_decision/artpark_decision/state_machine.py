@@ -4,6 +4,7 @@ Phases:
   INIT            - settle, bring sensors online
   EXPLORE         - PD right-wall-follow until tag detected
   APPROACH_TAG    - slow down, center on tag, wait for vote commit
+  WAIT_OPENING    - drive forward until side opening found, then turn
   ACT_LEFT/RIGHT  - rotate +/-90deg
   ACT_UTURN       - rotate 180deg
   POST_ROTATE     - drive forward ~0.8 m after rotation to enter next tile
@@ -12,10 +13,6 @@ Phases:
   SEEK_TAG_5      - wall-follow + scan for AprilTags after green exhausts
   RECOVERY        - escape stuck situations (spin / reverse / escape)
   REACH_STOP      - solid-red tile or STOP pose -> final halt
-
-All scoreable events are surfaced on /tag_event (from apriltag_handler) and
-/tile_event (from tile_tracker); the state machine mirrors them into
-/scorecard for the logger. The state machine itself only owns /cmd_vel.
 """
 from __future__ import annotations
 
@@ -43,6 +40,7 @@ class Phase(Enum):
     INIT = auto()
     EXPLORE = auto()
     APPROACH_TAG = auto()
+    WAIT_OPENING = auto()
     ACT_LEFT = auto()
     ACT_RIGHT = auto()
     ACT_UTURN = auto()
@@ -58,7 +56,7 @@ class Phase(Enum):
 class SMState:
     phase: Phase = Phase.INIT
     seq: int = 0
-    entry_edge: Optional[str] = None     # world-frame edge for current tile
+    entry_edge: Optional[str] = None
     tile_rc: Optional[tuple[int, int]] = None
     obstacle_near: bool = False
     approach_mode: bool = False
@@ -98,8 +96,13 @@ class SMState:
     color_follow_start_x: float = 0.0
     color_follow_start_y: float = 0.0
     color_follow_start_time: float = 0.0
-    color_zero_streak: int = 0          # consecutive ticks with 0 color pixels
-    color_ever_seen: bool = False       # whether we ever saw color in this phase
+    color_zero_streak: int = 0
+    color_ever_seen: bool = False
+
+    # WAIT_OPENING: pending action to execute when opening found
+    pending_action: Optional[str] = None
+    # Compound actions: phase to enter after POST_ROTATE (set before rotation)
+    pending_post_phase: Optional[Phase] = None
 
 
 class StateMachine(Node):
@@ -132,6 +135,8 @@ class StateMachine(Node):
         self.declare_parameter('color_exhaust_streak', 15)
         # Red STOP detection
         self.declare_parameter('red_stop_threshold', 8000)
+        # Tag execution distance (only act when this close to tag)
+        self.declare_parameter('tag_execute_dist_m', 0.80)
 
         self.v_exp   = float(self.get_parameter('v_explore').value)
         self.v_app   = float(self.get_parameter('v_approach').value)
@@ -152,6 +157,7 @@ class StateMachine(Node):
         self.color_grace_time = float(self.get_parameter('color_grace_time_s').value)
         self.color_exhaust_streak = int(self.get_parameter('color_exhaust_streak').value)
         self.red_stop_threshold = int(self.get_parameter('red_stop_threshold').value)
+        self.tag_execute_dist = float(self.get_parameter('tag_execute_dist_m').value)
 
         # -------- state --------
         self.s = SMState()
@@ -176,24 +182,35 @@ class StateMachine(Node):
 
         # 20 Hz tick drives motion
         self.timer = self.create_timer(0.05, self._tick)
-        # 0.5 Hz heartbeat so operators see what the node is doing.
         self._heartbeat_timer = self.create_timer(2.0, self._heartbeat)
         self._prev_phase_logged = None
 
-        # Octant layout (from obstacle_monitor formula):
-        #   oct[0]=back, oct[1]=back-right, oct[2]=right, oct[3]=front-right,
-        #   oct[4]=forward, oct[5]=front-left, oct[6]=left, oct[7]=back-left
         self._octants = [float('inf')] * 8
         self.get_logger().info('state_machine up, entering INIT')
 
     # ================================================================
     # callbacks
+    # ================================================================
     def _on_tag(self, msg: TagEvent) -> None:
+        # Skip already-executed tags
         if msg.tag_id in self.s.tags_logged and not msg.first_sighting:
             return
+
+        action = msg.decision
+
+        # Distance gate: only execute when close enough to the tag.
+        # Don't add to tags_logged yet — keep re-processing until close.
+        if msg.distance > self.tag_execute_dist:
+            self._think(
+                f'Tag {msg.tag_id} seen at {msg.distance:.2f}m (> {self.tag_execute_dist:.2f}m), '
+                f'approaching closer before acting',
+                rule='state_machine.tag_distance_wait', confidence=0.8)
+            return
+
+        # Mark as executed
         self.s.tags_logged.add(msg.tag_id)
 
-        # Emit scorecard row (logger listens)
+        # Emit scorecard row
         row = {
             'type': 'TAG_LOG',
             'tag_id': msg.tag_id,
@@ -204,38 +221,41 @@ class StateMachine(Node):
         }
         self.pub_score.publish(String(data=json.dumps(row)))
 
-        action = msg.decision
-        self._think(f'TagEvent committed: label={msg.logical_label}, action={action}',
-                    rule='state_machine.on_tag_commit',
-                    confidence=1.0)
+        self._think(f'TagEvent committed: label={msg.logical_label}, action={action}, '
+                    f'dist={msg.distance:.2f}m',
+                    rule='state_machine.on_tag_commit', confidence=1.0)
 
-        # Execute the tag action — no LiDAR veto (corridor walls in a 0.9m
-        # grid are always ~0.35m away, so a veto would block every turn).
+        # Execute the tag action unconditionally — tag instructions are law.
         if action == 'LEFT':
-            self._start_rotation(+math.pi / 2, Phase.ACT_LEFT)
+            self.s.pending_action = 'LEFT'
+            self.s.pending_post_phase = None
+            self.s.phase = Phase.WAIT_OPENING
         elif action == 'RIGHT':
-            self._start_rotation(-math.pi / 2, Phase.ACT_RIGHT)
+            self.s.pending_action = 'RIGHT'
+            self.s.pending_post_phase = None
+            self.s.phase = Phase.WAIT_OPENING
+        elif action == 'RIGHT_GREEN':
+            self.s.pending_action = 'RIGHT'
+            self.s.pending_post_phase = Phase.GREEN_FOLLOW
+            self.s.phase = Phase.WAIT_OPENING
+        elif action == 'LEFT_ORANGE':
+            self.s.pending_action = 'LEFT'
+            self.s.pending_post_phase = Phase.ORANGE_FOLLOW
+            self.s.phase = Phase.WAIT_OPENING
         elif action == 'U_TURN':
             self.s.pre_uturn_entry = self.s.entry_edge
             self._start_rotation(math.pi, Phase.ACT_UTURN)
-        elif action == 'GREEN':
-            self._enter_color_follow(Phase.GREEN_FOLLOW)
-        elif action == 'ORANGE':
-            self._enter_color_follow(Phase.ORANGE_FOLLOW)
 
     def _on_edge(self, msg: EdgeSample) -> None:
         self.s.last_edge_sample = msg
 
         # Red STOP detection — only active during ORANGE_FOLLOW and only
-        # after a grace period (robot must have been in ORANGE_FOLLOW for
-        # at least color_grace_time_s seconds and moved color_grace_dist_m).
+        # after a grace period.
         if self.s.phase == Phase.ORANGE_FOLLOW:
             if msg.red_total > self.red_stop_threshold:
-                # Grace: must have been in ORANGE_FOLLOW long enough
                 elapsed = time.monotonic() - self.s.color_follow_start_time
                 cf_dist = self._color_follow_dist()
                 if elapsed > self.color_grace_time and cf_dist > self.color_grace_dist:
-                    # Also require robot has moved >1m from spawn
                     dist = math.hypot(self.s.odom_x, self.s.odom_y)
                     if dist > 1.0:
                         self.s.phase = Phase.REACH_STOP
@@ -279,11 +299,11 @@ class StateMachine(Node):
             f'yaw={math.degrees(self.s.current_yaw):.0f}deg | '
             f'obs_near={self.s.obstacle_near} | approach={self.s.approach_mode} | '
             f'hold={self.debug_hold} | '
+            f'pending={self.s.pending_action} | '
             f'oct_fwd={self._oct(4):.2f} oct_right={self._oct(2):.2f} '
             f'oct_left={self._oct(6):.2f}')
 
     def _oct(self, idx: int) -> float:
-        """Safe octant access."""
         if idx < len(self._octants):
             v = self._octants[idx]
             return v if math.isfinite(v) and v > 0 else float('inf')
@@ -304,7 +324,7 @@ class StateMachine(Node):
             self.s.last_history_time = now
 
         if ph in (Phase.EXPLORE, Phase.GREEN_FOLLOW, Phase.ORANGE_FOLLOW,
-                  Phase.SEEK_TAG_5, Phase.POST_ROTATE):
+                  Phase.SEEK_TAG_5, Phase.POST_ROTATE, Phase.WAIT_OPENING):
             if self._check_stuck(now):
                 return
 
@@ -316,8 +336,7 @@ class StateMachine(Node):
             if time.monotonic() - self._last_cmd_time > 1.0:
                 self.s.phase = Phase.EXPLORE
                 self._think('INIT -> EXPLORE (settle complete)',
-                            rule='state_machine.init_timeout',
-                            confidence=1.0)
+                            rule='state_machine.init_timeout', confidence=1.0)
             self._publish(cmd)
             return
 
@@ -326,7 +345,6 @@ class StateMachine(Node):
             return
 
         if ph == Phase.APPROACH_TAG:
-            # Timeout: if tag vote doesn't commit within 8s, revert to EXPLORE
             if time.monotonic() - self.s.approach_start > 8.0:
                 self.s.phase = Phase.EXPLORE
                 self.s.approach_mode = False
@@ -338,6 +356,10 @@ class StateMachine(Node):
                 return
             cmd.linear.x = self.v_app
             self._publish(cmd)
+            return
+
+        if ph == Phase.WAIT_OPENING:
+            self._wait_for_opening(cmd)
             return
 
         if ph in (Phase.ACT_LEFT, Phase.ACT_RIGHT, Phase.ACT_UTURN):
@@ -369,72 +391,91 @@ class StateMachine(Node):
             return
 
     # ================================================================
+    # WAIT_OPENING: drive forward until the side opens up, then turn
+    # ================================================================
+    def _wait_for_opening(self, cmd: Twist) -> None:
+        """Drive forward until an opening appears on the pending turn side,
+        then execute the rotation. This ensures the robot reaches the
+        junction before turning."""
+        action = self.s.pending_action
+        if action == 'RIGHT':
+            side = self._oct(2)
+            side_fwd = self._oct(3)
+            label = 'right'
+        else:  # LEFT
+            side = self._oct(6)
+            side_fwd = self._oct(5)
+            label = 'left'
+
+        # Opening detected: side AND side-forward are both clear
+        if side > self.opening_thresh and side_fwd > self.opening_thresh:
+            self._think(
+                f'WAIT_OPENING: {label} opening found (side={side:.2f}m, '
+                f'side_fwd={side_fwd:.2f}m) -> rotating',
+                rule='state_machine.opening_found', confidence=1.0)
+            if action == 'RIGHT':
+                self._start_rotation(-math.pi / 2, Phase.ACT_RIGHT)
+            else:
+                self._start_rotation(+math.pi / 2, Phase.ACT_LEFT)
+            return
+
+        # No opening yet — drive forward with obstacle avoidance
+        fwd = self._oct(4)
+        if fwd < self.emergency_front:
+            cmd.angular.z = self.w_turn
+            self._publish(cmd)
+            return
+
+        if fwd < self.slow_front:
+            cmd.linear.x = 0.08
+            cmd.angular.z = self.w_turn * 0.5
+            self._publish(cmd)
+            return
+
+        cmd.linear.x = self.v_exp
+        self._publish(cmd)
+
+    # ================================================================
     # EXPLORE: PD right-wall-following
     # ================================================================
     def _explore_wall_follow(self, cmd: Twist) -> None:
-        """PD-controlled right-wall-follower using octant LiDAR data.
-
-        Octant layout:
-          oct[4]=forward, oct[3]=front-right, oct[2]=right,
-          oct[5]=front-left, oct[6]=left
-
-        Behaviors (checked in priority order):
-          1. Emergency: front < 0.25m -> hard left turn
-          2. Slow approach: front < 0.40m -> creep + left turn
-          3. Too close right: front-right < 0.30m -> veer left
-          4. Opening right: right + front-right > 0.80m -> gentle right
-          5. PD tracking: maintain right wall at ~0.40m
-          6. No right wall: drive forward + gentle right drift
-        """
         fwd = self._oct(4)
         fwd_right = self._oct(3)
         right = self._oct(2)
 
-        # 1. Emergency stop + hard left turn
         if fwd < self.emergency_front:
             cmd.angular.z = self.w_turn
-            self._think(f'EXPLORE: EMERGENCY front={fwd:.2f}m, hard left',
-                        rule='wall_follow.emergency', confidence=1.0)
             self._publish(cmd)
             return
 
-        # 2. Slow approach + medium left turn
         if fwd < self.slow_front:
             cmd.linear.x = 0.08
             cmd.angular.z = self.w_turn * 0.6
-            self._think(f'EXPLORE: slow approach front={fwd:.2f}m',
-                        rule='wall_follow.slow_approach', confidence=0.9)
             self._publish(cmd)
             return
 
-        # 3. Front-right too close — veer left
         if fwd_right < 0.30:
             cmd.linear.x = self.v_exp * 0.7
             cmd.angular.z = self.w_turn * 0.4
             self._publish(cmd)
             return
 
-        # 4. Opening on right (lost the wall) — gentle right to follow it
         if right > self.opening_thresh and fwd_right > self.opening_thresh:
             cmd.linear.x = self.v_exp
-            cmd.angular.z = -0.3  # gentle right turn into the opening
+            cmd.angular.z = -0.3
             self._publish(cmd)
             return
 
-        # 5. PD wall tracking: maintain right wall at target distance
-        if right < 2.0:  # right wall is visible (within 2m)
+        if right < 2.0:
             error = right - self.wall_target
             d_error = error - self.s.wall_error_prev
             self.s.wall_error_prev = error
-
             cmd.linear.x = self.v_exp
             cmd.angular.z = -(self.wall_kp * error + self.wall_kd * d_error)
-            # Clamp angular velocity
             cmd.angular.z = max(-self.w_turn, min(self.w_turn, cmd.angular.z))
             self._publish(cmd)
             return
 
-        # 6. No right wall detected — drive forward with gentle right drift
         cmd.linear.x = self.v_exp
         cmd.angular.z = -0.2
         self.s.wall_error_prev = 0.0
@@ -454,7 +495,7 @@ class StateMachine(Node):
 
     def _run_rotation(self, cmd: Twist) -> None:
         if self.s.rotation_target_yaw is None:
-            self.s.phase = Phase.GREEN_FOLLOW if 3 in self.s.tags_logged else Phase.EXPLORE
+            self.s.phase = Phase.EXPLORE
             return
 
         diff = math.atan2(
@@ -463,30 +504,33 @@ class StateMachine(Node):
         )
 
         if abs(diff) < math.radians(5):
-            # Rotation complete — transition to POST_ROTATE
+            # Rotation complete -> POST_ROTATE
             self.s.rotation_target_yaw = None
             self.s.post_rotate_start_x = self.s.odom_x
             self.s.post_rotate_start_y = self.s.odom_y
 
-            if self.s.phase == Phase.ACT_UTURN:
-                # After U-turn: set entry_edge to OPPOSITE of pre-uturn entry
+            # Determine what to do after driving forward
+            if self.s.pending_post_phase is not None:
+                # Compound action: turn was part of RIGHT_GREEN or LEFT_ORANGE
+                self.s.post_rotate_target = self.s.pending_post_phase
+                self.s.pending_post_phase = None
+            elif self.s.phase == Phase.ACT_UTURN:
                 if self.s.pre_uturn_entry:
                     self.s.entry_edge = OPPOSITE.get(self.s.pre_uturn_entry, '')
                 else:
                     self.s.entry_edge = None
                 self.s.pre_uturn_entry = None
-                self.s.post_rotate_target = Phase.GREEN_FOLLOW
+                self.s.post_rotate_target = Phase.EXPLORE
             else:
-                # After LEFT/RIGHT: drive forward then resume EXPLORE
                 self.s.entry_edge = None
                 self.s.post_rotate_target = Phase.EXPLORE
 
+            self.s.pending_action = None
             self.s.phase = Phase.POST_ROTATE
             self._think(f'rotation complete -> POST_ROTATE (target={self.s.post_rotate_target.name})',
                         rule='state_machine.rotation_done', confidence=1.0)
             return
 
-        # Proportional rotation for smoother approach
         speed = self.w_turn if abs(diff) > math.radians(20) else self.w_turn * 0.5
         cmd.angular.z = speed if diff > 0 else -speed
         self._publish(cmd)
@@ -500,10 +544,8 @@ class StateMachine(Node):
             self.s.odom_y - self.s.post_rotate_start_y,
         )
 
-        # Done if we've driven far enough or hit an obstacle
         if dist >= self.post_rotate_dist or self.s.obstacle_near:
             target_phase = self.s.post_rotate_target
-            # If transitioning to color follow, initialize grace tracking
             if target_phase in (Phase.GREEN_FOLLOW, Phase.ORANGE_FOLLOW):
                 self._enter_color_follow(target_phase)
             else:
@@ -513,11 +555,14 @@ class StateMachine(Node):
             self._publish(Twist())
             return
 
-        # Obstacle avoidance even during post-rotate
         fwd = self._oct(4)
         if fwd < self.emergency_front:
-            self.s.phase = self.s.post_rotate_target
-            self._think(f'POST_ROTATE wall ahead ({fwd:.2f}m) -> {self.s.post_rotate_target.name}',
+            target_phase = self.s.post_rotate_target
+            if target_phase in (Phase.GREEN_FOLLOW, Phase.ORANGE_FOLLOW):
+                self._enter_color_follow(target_phase)
+            else:
+                self.s.phase = target_phase
+            self._think(f'POST_ROTATE wall ahead ({fwd:.2f}m) -> {target_phase.name}',
                         rule='state_machine.post_rotate_wall', confidence=0.9)
             self._publish(Twist())
             return
@@ -529,7 +574,6 @@ class StateMachine(Node):
     # Color following (robot-frame) with grace period
     # ================================================================
     def _enter_color_follow(self, phase: Phase) -> None:
-        """Initialize color-following state with grace period tracking."""
         self.s.phase = phase
         self.s.entry_edge = None
         self.s.color_follow_start_x = self.s.odom_x
@@ -539,26 +583,12 @@ class StateMachine(Node):
         self.s.color_ever_seen = False
 
     def _color_follow_dist(self) -> float:
-        """Distance driven since entering color-follow."""
         return math.hypot(
             self.s.odom_x - self.s.color_follow_start_x,
             self.s.odom_y - self.s.color_follow_start_y,
         )
 
     def _follow_color(self, cmd: Twist, color: str) -> None:
-        """Follow green/orange floor markers using robot-frame edge sampling.
-
-        The floor camera's edge labels are in ROBOT frame:
-          N = image top = robot forward
-          S = image bottom = robot backward
-          E = image right = robot right
-          W = image left = robot left
-
-        Grace period: don't declare exhaustion until we've driven at least
-        color_grace_dist_m AND waited color_grace_time_s AND had
-        color_exhaust_streak consecutive zero-pixel frames.
-        """
-        # --- Obstacle avoidance (highest priority) ---
         fwd = self._oct(4)
         fwd_right = self._oct(3)
 
@@ -579,7 +609,6 @@ class StateMachine(Node):
             self._publish(cmd)
             return
 
-        # --- Color decision ---
         es = self.s.last_edge_sample
         if es is None:
             cmd.linear.x = self.v_fol * 0.5
@@ -592,11 +621,8 @@ class StateMachine(Node):
             counts = {'N': es.orange_n, 'S': es.orange_s, 'E': es.orange_e, 'W': es.orange_w}
 
         total_color = sum(counts.values())
-
-        # Robot-frame wall veto
         walls = self._walls_from_octants()
 
-        # Always exclude behind us (robot-frame 'S')
         decision = decide_exit(counts, entry_edge='S',
                                wall_blocked=walls,
                                min_pixels=30, near_tie_ratio=0.15)
@@ -609,7 +635,6 @@ class StateMachine(Node):
             confidence=decision.confidence,
         )
 
-        # Track whether we've ever seen this color
         if total_color > 30:
             self.s.color_ever_seen = True
             self.s.color_zero_streak = 0
@@ -617,7 +642,6 @@ class StateMachine(Node):
             self.s.color_zero_streak += 1
 
         if not decision.chosen:
-            # Check grace period before declaring exhaustion
             dist = self._color_follow_dist()
             elapsed = time.monotonic() - self.s.color_follow_start_time
             grace_ok = (dist >= self.color_grace_dist and
@@ -627,25 +651,20 @@ class StateMachine(Node):
             if grace_ok and streak_ok:
                 if color == 'green':
                     self.s.phase = Phase.SEEK_TAG_5
-                    self._think(f'green arc exhausted (dist={dist:.2f}m, streak={self.s.color_zero_streak}) '
-                                f'-> SEEK_TAG_5',
+                    self._think(f'green arc exhausted (dist={dist:.2f}m) -> SEEK_TAG_5',
                                 rule='state_machine.green_exhausted', confidence=0.7)
                 else:
-                    # Orange exhausted — likely at STOP
                     self.s.phase = Phase.REACH_STOP
                     self.pub_score.publish(String(data=json.dumps({'type': 'STOP_REACHED'})))
-                    self._think(f'orange exhausted (dist={dist:.2f}m, streak={self.s.color_zero_streak}) '
-                                f'-> REACH_STOP',
+                    self._think(f'orange exhausted (dist={dist:.2f}m) -> REACH_STOP',
                                 rule='state_machine.orange_exhausted', confidence=0.8)
                 self._publish(Twist())
                 return
 
-            # Grace period not met — keep driving forward
             cmd.linear.x = self.v_fol
             self._publish(cmd)
             return
 
-        # Convert robot-frame exit to heading delta
         delta = {'N': 0.0, 'E': -math.pi / 2, 'S': math.pi, 'W': math.pi / 2}
         target_heading = self.s.current_yaw + delta[decision.chosen]
         target_heading = math.atan2(math.sin(target_heading), math.cos(target_heading))
@@ -658,28 +677,26 @@ class StateMachine(Node):
             cmd.angular.z = self.w_turn * (1 if diff > 0 else -1) * 0.8
         else:
             cmd.linear.x = self.v_fol
-            cmd.angular.z = 0.6 * diff  # P-correction while driving
+            cmd.angular.z = 0.6 * diff
 
         self._publish(cmd)
 
     def _walls_from_octants(self) -> Dict[str, bool]:
-        """Map octant distances to robot-frame wall flags."""
         def blocked(idx: int) -> bool:
             v = self._oct(idx)
             return 0 < v < 0.45
 
         return {
-            'N': blocked(4),  # forward
-            'E': blocked(2),  # right
-            'S': blocked(0),  # back
-            'W': blocked(6),  # left
+            'N': blocked(4),
+            'E': blocked(2),
+            'S': blocked(0),
+            'W': blocked(6),
         }
 
     # ================================================================
     # Stuck detection + Recovery
     # ================================================================
     def _check_stuck(self, now: float) -> bool:
-        """Check if robot is stuck. Returns True if entering RECOVERY."""
         if len(self.s.position_history) < 5:
             return False
 
@@ -702,7 +719,6 @@ class StateMachine(Node):
         return False
 
     def _run_recovery(self, cmd: Twist) -> None:
-        """Cycling recovery strategies: spin, reverse, escape."""
         elapsed = time.monotonic() - self.s.recovery_start
         strategy = self.s.recovery_strategy % 3
 

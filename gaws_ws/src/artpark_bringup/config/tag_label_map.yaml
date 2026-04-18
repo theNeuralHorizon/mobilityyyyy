@@ -1,19 +1,15 @@
-# The ONLY hardcoded AprilTag knowledge we are allowed.
+# AprilTag ID → logical label → action mapping.
 #
-# action_by_label is canonical from Atharva (2026-04-17 19:29):
-#   Tag 1: LEFT, Tag 2: RIGHT, Tag 3: start GREEN, Tag 4: U-TURN, Tag 5: ORANGE
-#
-# tag_label_map_json is the runtime-observed lookup:  raw_tag_id -> logical_label.
-# Populated after the one-time P0 teleop run. Values below are the geometric
-# hypothesis — replace with confirmed mapping after verification.
-#
-# Dicts are passed as JSON strings because ROS 2 parameters don't support
-# nested dict types natively.
+# tag 0 → RIGHT        (turn right at next opening)
+# tag 1 → LEFT         (turn left at next opening)
+# tag 2 → RIGHT_GREEN  (turn right, then follow green tiles)
+# tag 3 → U_TURN       (180-degree turn)
+# tag 4 → LEFT_ORANGE  (turn left, then follow orange tiles)
 
 apriltag_handler:
   ros__parameters:
-    tag_label_map_json:    '{"1": 1, "0": 2, "4": 3, "3": 4, "2": 5}'
-    action_by_label_json:  '{"1": "LEFT", "2": "RIGHT", "3": "GREEN", "4": "U_TURN", "5": "ORANGE"}'
+    tag_label_map_json:    '{"0": 1, "1": 2, "2": 3, "3": 4, "4": 5}'
+    action_by_label_json:  '{"1": "RIGHT", "2": "LEFT", "3": "RIGHT_GREEN", "4": "U_TURN", "5": "LEFT_ORANGE"}'
     vote_window: 3
     pixel_tolerance: 20.0
     min_tag_px: 25
