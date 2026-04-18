@@ -131,7 +131,7 @@ class StateMachine(Node):
         self.declare_parameter('color_grace_time_s', 3.0)
         self.declare_parameter('color_exhaust_streak', 15)
         # Red STOP detection
-        self.declare_parameter('red_stop_threshold', 3000)
+        self.declare_parameter('red_stop_threshold', 8000)
 
         self.v_exp   = float(self.get_parameter('v_explore').value)
         self.v_app   = float(self.get_parameter('v_approach').value)
@@ -235,12 +235,13 @@ class StateMachine(Node):
     def _on_edge(self, msg: EdgeSample) -> None:
         self.s.last_edge_sample = msg
 
-        # Red STOP detection — only active during ORANGE_FOLLOW or SEEK_TAG_5
-        if self.s.phase in (Phase.ORANGE_FOLLOW, Phase.SEEK_TAG_5):
+        # Red STOP detection — only active during ORANGE_FOLLOW
+        # (NOT SEEK_TAG_5: rosette tiles trigger false positives there)
+        if self.s.phase == Phase.ORANGE_FOLLOW:
             if msg.red_total > self.red_stop_threshold:
                 # Require robot has moved >1m from spawn to avoid false-positive
-                # on the green START tile
-                dist = math.hypot(self.s.odom_x - (-1.35), self.s.odom_y - 1.80)
+                # on the green START tile. Odom starts at (0,0) at spawn.
+                dist = math.hypot(self.s.odom_x, self.s.odom_y)
                 if dist > 1.0:
                     self.s.phase = Phase.REACH_STOP
                     self.pub_score.publish(String(data=json.dumps({'type': 'STOP_REACHED'})))

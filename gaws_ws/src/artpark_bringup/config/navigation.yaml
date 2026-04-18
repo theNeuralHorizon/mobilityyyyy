@@ -25,7 +25,8 @@ state_machine:
     color_grace_time_s: 3.0
     color_exhaust_streak: 15
     # Red STOP detection threshold (center-region pixels)
-    red_stop_threshold: 3000
+    # Set high to avoid false positives on rosette tile patterns
+    red_stop_threshold: 8000
 
 obstacle_monitor:
   ros__parameters:

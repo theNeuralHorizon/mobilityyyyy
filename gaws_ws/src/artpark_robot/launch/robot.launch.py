@@ -37,9 +37,10 @@ def generate_launch_description():
         parameters=[{'robot_description': robot_description, 'use_sim_time': True}],
     )
 
-    # Spawn via ExecuteProcess so argv is passed as-is (no shell re-parsing),
-    # and use the `=` form for flags that take potentially-negative values.
-    spawn = ExecuteProcess(
+    # Delay the spawn by 3s so robot_state_publisher has published the
+    # /robot_description topic before 'create' tries to subscribe to it.
+    # Without this, 'create' can timeout or spawn an empty entity.
+    spawn = TimerAction(period=3.0, actions=[ExecuteProcess(
         cmd=[
             'ros2', 'run', 'ros_gz_sim', 'create',
             '-topic', 'robot_description',
@@ -50,12 +51,13 @@ def generate_launch_description():
             ['-Y', '=', spawn_yaw],
         ],
         output='screen',
-    )
+    )])
 
     # After the create process exits, call set_pose as a belt-and-suspenders
     # teleport. Re-snaps the robot to the intended world pose even if the
     # -x/-y flags were ignored (common Harmonic-gotcha with negative vals).
-    fixup_pose = TimerAction(period=2.0, actions=[
+    # 6s = 3s (spawn delay above) + 3s (wait for entity to be created)
+    fixup_pose = TimerAction(period=6.0, actions=[
         ExecuteProcess(
             cmd=['gz', 'service', '-s', '/world/artpark_arena/set_pose',
                  '--reqtype', 'gz.msgs.Pose',

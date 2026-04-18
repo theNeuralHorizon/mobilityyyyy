@@ -29,9 +29,11 @@ def generate_launch_description():
         launch_arguments={'headless': LaunchConfiguration('headless')}.items(),
     )
 
-    # Give Gazebo a couple seconds to finish booting before spawning the robot.
+    # Give Gazebo time to finish booting before spawning the robot.
+    # GUI mode needs ~10s for rendering pipeline init; headless is faster but
+    # this delay is safe for both.
     robot_spawn = TimerAction(
-        period=4.0,
+        period=10.0,
         actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(PathJoinSubstitution([robot, 'launch', 'robot.launch.py'])),
             launch_arguments={
@@ -103,7 +105,7 @@ def generate_launch_description():
     )
 
     # Perception + decision come up AFTER the robot (hence another delay).
-    downstream = TimerAction(period=7.0, actions=[handler, floor, obs, tile, sm, logger])
+    downstream = TimerAction(period=18.0, actions=[handler, floor, obs, tile, sm, logger])
 
     return LaunchDescription([
         DeclareLaunchArgument('spawn_x',   default_value='-1.35'),
