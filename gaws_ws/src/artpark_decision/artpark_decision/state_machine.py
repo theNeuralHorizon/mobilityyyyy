@@ -186,6 +186,8 @@ class StateMachine(Node):
         self._prev_phase_logged = None
 
         self._octants = [float('inf')] * 8
+        self._octants_received = False
+        self._init_start = time.monotonic()
         self.get_logger().info('state_machine up, entering INIT')
 
     # ================================================================
@@ -279,6 +281,10 @@ class StateMachine(Node):
 
     def _on_octants(self, msg: Float32MultiArray) -> None:
         self._octants = list(msg.data)
+        if not self._octants_received:
+            any_finite = any(math.isfinite(v) and v < 50.0 for v in self._octants)
+            if any_finite:
+                self._octants_received = True
 
     def _on_odom(self, msg: Odometry) -> None:
         q = msg.pose.pose.orientation
@@ -333,10 +339,20 @@ class StateMachine(Node):
             if self.debug_hold:
                 self._publish(cmd)
                 return
-            if time.monotonic() - self._last_cmd_time > 1.0:
+            elapsed = time.monotonic() - self._init_start
+            # Wait until LiDAR octants arrive (perception pipeline ready)
+            # or a 15s safety cap so we don't wait forever.
+            ready = self._octants_received and elapsed > 2.0
+            timed_out = elapsed > 15.0
+            if ready or timed_out:
+                # Clear stuck-detection history so EXPLORE starts fresh
+                self.s.position_history.clear()
+                self.s.last_history_time = time.monotonic()
                 self.s.phase = Phase.EXPLORE
-                self._think('INIT -> EXPLORE (settle complete)',
-                            rule='state_machine.init_timeout', confidence=1.0)
+                self._think(
+                    f'INIT -> EXPLORE ({"perception ready" if ready else "15s cap"}, '
+                    f'waited {elapsed:.1f}s)',
+                    rule='state_machine.init_timeout', confidence=1.0)
             self._publish(cmd)
             return
 
